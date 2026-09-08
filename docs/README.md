@@ -15,6 +15,7 @@
 - [`developer/architecture.md`](developer/architecture.md) — module seams and architecture/deepening notes.
 - [`developer/development.md`](developer/development.md) — detailed project structure, conventions, CI, testing, REST API, and common pitfalls.
 - [`developer/adr/`](developer/adr/) — architecture decision records for significant long-term decisions.
+- [RF-Reliability- und Regressionsreview — Astra GPT 6, 08.09.2026](developer/reviews/2026-09-08-rf-reliability-astra-gpt-6.md) — read-only review of STOP delivery, RF reliability, and historical regression candidates.
 
 ## Agent docs
 
