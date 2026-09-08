@@ -254,7 +254,6 @@ void IRAM_ATTR Elero::interrupt(Elero *arg) {
   if (arg->radio_mode_.load(std::memory_order_relaxed) == static_cast<uint8_t>(RadioMode::TX)) {
     arg->tx_done_.store(true, std::memory_order_release);
   } else {
-    arg->rx_irq_ms_.store(millis(), std::memory_order_relaxed);
     arg->rx_ready_.store(true, std::memory_order_release);
   }
 }
@@ -533,7 +532,7 @@ void Elero::advance_delivery_coordinators_() {
     urgent_waiting = urgent_waiting || entry.second->has_urgent(now);
   }
 
-  if (!urgent_waiting && !this->radio_spacing_.ready(now, std::max(this->send_delay_, 2u)))
+  if (!urgent_waiting && !this->radio_spacing_.ready(now, std::max<uint32_t>(this->send_delay_, 2u)))
     return;  // real completion-based RX opportunity across all profiles
 
   const size_t profile_count = profiles.size();

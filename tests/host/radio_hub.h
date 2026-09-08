@@ -4,6 +4,7 @@
 #include "elero/cc1101.h"
 #include "elero/elero_rx_fifo.h"
 #include "elero/elero_radio_timing.h"
+#include "elero/elero_status_read.h"
 #include <atomic>
 #include <cstring>
 #include <deque>
@@ -38,6 +39,8 @@ class Elero {
   void tx_abort_();
   void flush_rx();
   void flush_and_rx();
+  bool enter_idle_();
+  uint8_t read_status_once_(uint8_t);
   uint8_t read_status(uint8_t);
   bool read_status_stable(uint8_t, uint8_t &);
   void read_buf(uint8_t, uint8_t *, uint8_t);

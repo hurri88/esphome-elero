@@ -140,6 +140,38 @@ TEST_F(CoverDeliveryTest, CoverWebButtonAndAutomationShareStopEntry) {
   }
 }
 
+TEST_F(CoverDeliveryTest, FreshMovementUsesOnlyOneExtraBurstThenFailsExplicitly) {
+  stop();
+  cover.set_rx_status(ELERO_STATE_MOVING_UP, fresh());
+  transmit(test_now + 1); transmit(test_now + 1);
+  cover.set_rx_status(ELERO_STATE_MOVING_UP, fresh());
+  EXPECT_FALSE(cover.verifying()); EXPECT_STREQ(cover.result(), "stop_failed");
+  ASSERT_EQ(hub.packets.size(), 4u);
+}
+
+TEST_F(CoverDeliveryTest, StopVerificationDeadlineSurvivesMillisWrap) {
+  test_now = UINT32_MAX - 1000;
+  cover.request_stop(); transmit(test_now + 1); transmit(test_now + 1);
+  const auto first = cover.cutoff().completed_at_ms;
+  test_now = first + 100; cover.loop(); EXPECT_EQ(hub.advance(test_now), 0u);
+  test_now = first + 1999; cover.loop(); EXPECT_EQ(hub.advance(test_now), 0u);
+  test_now = first + 2000; cover.loop(); EXPECT_NE(hub.advance(test_now), 0u);
+  EXPECT_TRUE(cover.verifying());
+}
+
+TEST_F(CoverDeliveryTest, OrdinaryOpenWithoutMotorResponseRemainsDeliveryUnconfirmed) {
+  transmit(1001);  // setup's initial CHECK, without a motor response
+  CoverCall open; open.position = COVER_OPEN; cover.control(open);
+  const auto id = hub.advance(1010);
+  ASSERT_NE(id, 0u);
+  const auto outcome = hub.complete(id, true, 1011, timeline.fence(1011));
+  EXPECT_EQ(outcome.motor_evidence, MotorDeliveryEvidence::LOCAL_TX_UNCONFIRMED);
+  EXPECT_EQ(hub.status, "delivery_unconfirmed");
+  test_now = 1500; cover.loop();
+  EXPECT_EQ(hub.status, "delivery_unconfirmed");
+  EXPECT_FALSE(cover.verifying());
+}
+
 TEST_F(CoverDeliveryTest, NoFeedbackHasBoundedExtraBurstAndVisibleFailure) {
   stop();
   const auto first = cover.cutoff().completed_at_ms;
@@ -178,6 +210,23 @@ TEST_F(CoverDeliveryTest, GroupStopVerifiesAllMembersAndBlocksNativeMovement) {
   other.set_rx_status(ELERO_STATE_STOPPED, fresh(0x222222));
   ASSERT_NE(hub.advance(1300), 0u);
   EXPECT_EQ(hub.packets.back().payload[4], 0x20);
+}
+
+TEST_F(CoverDeliveryTest, GroupPartialStopThenTerminalFailureCannotLeaveVerificationStuck) {
+  TestCover other;
+  other.set_elero_parent(&hub); other.set_blind_address(0x222222);
+  other.set_remote_address(0x123456); other.set_poll_interval(300000); other.setup();
+  TestGroup group;
+  group.set_elero_parent(&hub); group.add_member(&cover); group.add_member(&other); group.setup();
+  CoverCall stop; stop.stop = true; group.control(stop);
+  transmit(1010);  // first native packet really completed
+  for (uint32_t now = 1100; now <= 1400; now += 100) {
+    auto id = hub.advance(now);
+    ASSERT_NE(id, 0u);
+    hub.complete(id, false, now + 1);
+  }
+  EXPECT_FALSE(cover.verifying()); EXPECT_FALSE(other.verifying());
+  EXPECT_STREQ(cover.result(), "stop_failed"); EXPECT_STREQ(other.result(), "stop_failed");
 }
 
 TEST_F(CoverDeliveryTest, ConcurrentSameProfileStopPreservesBothTwoPacketBursts) {

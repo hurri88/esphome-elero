@@ -27,10 +27,10 @@ class RxFifoReader {
       // Bounded recovery of stuck GDO/incomplete reception. Still drain any
       // complete predecessor before discarding the interrupted trailing frame.
     }
-    if (!io.enter_idle()) return Result::IO_ERROR;
+    if (!io.enter_idle()) { io.resume_rx(); return Result::IO_ERROR; }
     uint8_t available = 0;
     if (!io.rx_bytes(available)) {
-      if (!keep_idle) io.resume_rx();
+      io.resume_rx();  // failed TX preparation must not strand the radio in IDLE
       return Result::IO_ERROR;
     }
     if ((available & 0x80) != 0 || available > 64) {

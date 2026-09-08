@@ -444,8 +444,10 @@ class ProfileDeliveryCoordinator {
     outcome.queue_size = this->active_lane_ == nullptr ? 0 : this->active_lane_->queue_.size;
     outcome.transmitted_at_ms = transmitted_at_ms;
     outcome.first_transmission = first_transmission;
-    if (delivery_packet_was_accepted(event))
+    if (delivery_packet_was_accepted(event)) {
       outcome.rx_cutoff = this->completion_cutoff_;
+      outcome.motor_evidence = MotorDeliveryEvidence::LOCAL_TX_UNCONFIRMED;
+    }
     outcome.fallback_member = fallback_member;
     outcome.fallback_member_index = fallback_member_index;
     return outcome;

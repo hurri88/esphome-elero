@@ -156,13 +156,15 @@ enum class DeliveryEvent : uint8_t {
   WAITING,
   QUEUE_FULL,
   PACKET_ACCEPTED,
-  COMPLETED,
+  COMPLETED,  // local packet plan complete, NEVER a motor acknowledgement
   RETRY_SCHEDULED,
   DROPPED,
   STALE_CLEARED,
   FALLBACK_STARTED,
   FALLBACK_MEMBER_DROPPED,
 };
+
+enum class MotorDeliveryEvidence : uint8_t { NONE, LOCAL_TX_UNCONFIRMED };
 
 struct DeliveryOutcome {
   DeliveryEvent event{DeliveryEvent::IDLE};
@@ -174,10 +176,21 @@ struct DeliveryOutcome {
   // completed. Zero for queueing, waiting, and failure outcomes.
   uint32_t transmitted_at_ms{0};
   bool first_transmission{false};
+  MotorDeliveryEvidence motor_evidence{MotorDeliveryEvidence::NONE};
   bool fallback_member{false};
   uint8_t fallback_member_index{0};
   RxCutoff rx_cutoff{};  // causal radio fence, not a motor acknowledgement
 };
+
+inline const char *ordinary_delivery_result(const DeliveryOutcome &outcome) {
+  if (outcome.intent.kind == CommandIntentKind::STOP || outcome.intent.kind == CommandIntentKind::CHECK)
+    return nullptr;
+  if (outcome.first_transmission && outcome.motor_evidence == MotorDeliveryEvidence::LOCAL_TX_UNCONFIRMED)
+    return "delivery_unconfirmed";
+  if (outcome.event == DeliveryEvent::DROPPED || outcome.event == DeliveryEvent::STALE_CLEARED)
+    return "delivery_failed";
+  return nullptr;
+}
 
 class ProfileDeliveryCoordinator;
 

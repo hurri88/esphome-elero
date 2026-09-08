@@ -11,6 +11,8 @@
 #include "elero_profile_delivery_coordinator.h"
 #include "elero_tx_admission.h"
 #include "elero_rx_fifo.h"
+#include "elero_counter_logic.h"
+#include "elero_status_read.h"
 #include "elero_radio_timing.h"
 #include <RadioLib.h>
 #include <string>
@@ -623,6 +625,9 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   bool send_command_internal_(t_elero_command *cmd, uint32_t enqueued_at_ms = 0);  // actual SPI TX, Core 0 only
 
   // Non-blocking TX state machine (runs on Core 0 radio task)
+  bool enter_idle_();
+  uint8_t read_status_once_(uint8_t addr);
+  bool read_status_stable(uint8_t addr, uint8_t &value);
   struct RxFifoIO;
   bool process_rx(bool keep_idle = false);
   void advance_tx();
@@ -663,7 +668,6 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   CcaBackoff cca_backoff_;
   CompletionSpacing radio_spacing_;  // Core 1 only; all profiles share the RX window
   bool tx_started_seen_{false};
-  std::atomic<uint32_t> rx_irq_ms_{0};
   std::atomic<bool> rx_ready_{false};   // set by ISR when GDO0 fires in RX mode
   std::atomic<bool> tx_done_{false};    // set by ISR when GDO0 fires in TX mode
 
@@ -732,8 +736,7 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   /// Per-source counter tracking: reject old/replayed counters within the active
   /// receive window, but allow resync after long gaps so lossy links or sender
   /// restarts do not leave entities stale until the 8-bit counter wraps.
-  std::map<uint32_t, uint8_t> last_seen_counter_;
-  std::map<uint32_t, uint32_t> last_seen_counter_ms_;
+  std::map<uint32_t, counter_logic::CounterState> status_counters_;
   bool is_duplicate_packet_(uint32_t src, uint8_t cnt);
   void prune_dedup_map_();
 

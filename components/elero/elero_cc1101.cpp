@@ -61,10 +61,9 @@ struct Elero::RxFifoIO {
   uint32_t now() const { return millis(); }
   bool packet_active() const { return hub.gdo0_pin_->digital_read(); }
   bool enter_idle() {
-    return hub.radio_->standby() == RADIOLIB_ERR_NONE &&
-           (hub.read_status(CC1101_MARCSTATE) & 0x1f) == CC1101_MARCSTATE_IDLE;
+    return hub.enter_idle_();
   }
-  bool rx_bytes(uint8_t &value) { value = hub.read_status(CC1101_RXBYTES); return true; }
+  bool rx_bytes(uint8_t &value) { return hub.read_status_stable(CC1101_RXBYTES, value); }
   void read_fifo(uint8_t *bytes, uint8_t count) { hub.read_buf(CC1101_RXFIFO, bytes, count); }
   void resume_rx() { hub.write_cmd(CC1101_SRX); }
   void discard(const char *reason) {
@@ -124,7 +123,17 @@ void Elero::advance_tx() {
   switch (this->tx_state_.load(std::memory_order_acquire)) {
 
     case TxState::CCA: {
-      uint8_t marc = this->read_status(CC1101_MARCSTATE) & 0x1f;
+      uint8_t marc = 0;
+      const bool stable = this->read_status_stable(CC1101_MARCSTATE, marc);
+      if (marc == CC1101_MARCSTATE_TXFIFO_UFLOW) {
+        this->tx_abort_();
+        break;
+      }
+      if (!stable) {
+        if (this->cca_backoff_.expired(now)) this->tx_abort_();
+        break;
+      }
+      marc &= 0x1f;
       // A transition just after the previous STX sample is not a CCA rejection.
       if (marc == CC1101_MARCSTATE_TX || marc == CC1101_MARCSTATE_RXTX_SWITCH ||
           marc == CC1101_MARCSTATE_TX_END) {
@@ -146,7 +155,9 @@ void Elero::advance_tx() {
         break;
       }
       if (marc != CC1101_MARCSTATE_RX) break;  // settling/calibration, bounded by attempt budget
-      if ((this->read_status(CC1101_PKTSTATUS) & 0x10) == 0) {
+      uint8_t packet_status = 0;
+      if (!this->read_status_stable(CC1101_PKTSTATUS, packet_status)) break;
+      if ((packet_status & 0x10) == 0) {
         this->cca_backoff_.busy(now);
         break;  // busy channel: remain RX, no FIFO flush and no blind SIDLE→STX
       }
@@ -166,57 +177,36 @@ void Elero::advance_tx() {
     }
 
     case TxState::TRANSMITTING: {
-      // Fast path: ISR signalled TX completion via tx_done_ flag
-      bool isr_done = this->tx_done_.load(std::memory_order_acquire);
-      uint8_t marc = this->read_status(CC1101_MARCSTATE) & 0x1F;
-
-      if (isr_done) {
-        this->tx_done_.store(false, std::memory_order_release);
-        // Verify TX FIFO is drained
-        uint8_t bytes = this->read_status(CC1101_TXBYTES) & 0x7F;
-        if (bytes == 0) {
-          this->tx_count_.fetch_add(1, std::memory_order_relaxed);
-          ESP_LOGV(TAG, "TX complete via ISR (marc=%s, %lums)",
-                   marcstate_to_string(marc), (unsigned long) elapsed);
-          this->publish_tx_completion_(this->active_tx_transaction_id_, true);
-          this->active_tx_transaction_id_ = 0;
-          this->tx_state_.store(TxState::COOLDOWN, std::memory_order_release);
-          this->tx_state_entered_ms_ = now;
-          this->last_tx_complete_ms_ = now;
-        } else {
-          ESP_LOGW(TAG, "TX ISR fired but %d bytes still in FIFO (marc=%s), aborting",
-                   bytes, marcstate_to_string(marc));
-          this->tx_abort_();
-        }
+      uint8_t marc = 0, bytes = 0;
+      const bool marc_stable = this->read_status_stable(CC1101_MARCSTATE, marc);
+      const bool bytes_stable = this->read_status_stable(CC1101_TXBYTES, bytes);
+      // Faults win over the ISR fast path and over apparently empty low bits.
+      if (marc == CC1101_MARCSTATE_TXFIFO_UFLOW || (bytes & 0x80) != 0) {
+        ESP_LOGE(TAG, "TX underflow: marc=0x%02x TXBYTES=0x%02x", marc, bytes);
+        this->tx_abort_();
         break;
       }
-
-      // Fallback: poll MARCSTATE for TX completion
-      if (radio_state_logic::is_tx_progress_state(marc)) {
-        if (radio_state_logic::has_tx_timed_out(elapsed, TX_STATE_TIMEOUT_MS)) {
-          ESP_LOGW(TAG, "TX timeout in TRANSMITTING (marc=%s, %lums), aborting",
-                   marcstate_to_string(marc), (unsigned long) elapsed);
-          this->tx_abort_();
-        }
-      } else if (marc == CC1101_MARCSTATE_TXFIFO_UFLOW) {
-        ESP_LOGE(TAG, "TX FIFO underflow");
+      if (!marc_stable || !bytes_stable) {
+        if (elapsed >= TX_STATE_TIMEOUT_MS) this->tx_abort_();
+        break;
+      }
+      marc &= 0x1f;
+      if (marc == CC1101_MARCSTATE_TX || marc == CC1101_MARCSTATE_TX_END)
+        this->tx_started_seen_ = true;
+      this->tx_done_.store(false, std::memory_order_release);  // hint, never motor ACK
+      const auto observation = radio_state_logic::observe_tx(
+          marc, bytes, this->tx_started_seen_, elapsed, TX_STATE_TIMEOUT_MS);
+      if (observation == radio_state_logic::TxObservation::SUCCESS) {
+        this->tx_count_.fetch_add(1, std::memory_order_relaxed);
+        ESP_LOGD(TAG, "Local TX complete; motor delivery unconfirmed (%lums)", (unsigned long) elapsed);
+        this->publish_tx_completion_(this->active_tx_transaction_id_, true);
+        this->active_tx_transaction_id_ = 0;
+        this->tx_state_.store(TxState::COOLDOWN, std::memory_order_release);
+        this->tx_state_entered_ms_ = now;
+        this->last_tx_complete_ms_ = now;
+      } else if (observation == radio_state_logic::TxObservation::FAILURE) {
+        ESP_LOGW(TAG, "Unproven/failed TX: marc=%s TXBYTES=0x%02x", marcstate_to_string(marc), bytes);
         this->tx_abort_();
-      } else {
-        uint8_t bytes = this->read_status(CC1101_TXBYTES) & 0x7F;
-        if (bytes == 0) {
-          this->tx_count_.fetch_add(1, std::memory_order_relaxed);
-          ESP_LOGV(TAG, "TX complete (marc=%s, %lums)",
-                   marcstate_to_string(marc), (unsigned long) elapsed);
-          this->publish_tx_completion_(this->active_tx_transaction_id_, true);
-          this->active_tx_transaction_id_ = 0;
-          this->tx_state_.store(TxState::COOLDOWN, std::memory_order_release);
-          this->tx_state_entered_ms_ = now;
-          this->last_tx_complete_ms_ = now;
-        } else {
-          ESP_LOGW(TAG, "TX failed: %d bytes still in FIFO (marc=%s) — likely CCA rejection, will retry",
-                   bytes, marcstate_to_string(marc));
-          this->tx_abort_();
-        }
       }
       break;
     }
@@ -225,11 +215,12 @@ void Elero::advance_tx() {
       if (elapsed >= TX_COOLDOWN_MS) {
         this->radio_mode_.store(static_cast<uint8_t>(RadioMode::RX), std::memory_order_relaxed);
         this->tx_state_.store(TxState::IDLE, std::memory_order_release);
-        uint8_t rxbytes = this->read_status(CC1101_RXBYTES);
+        uint8_t rxbytes = 0;
+        const bool stable = this->read_status_stable(CC1101_RXBYTES, rxbytes);
         if (rxbytes & 0x80) {
           ESP_LOGW(TAG, "RX FIFO overflow detected after TX, flushing");
           this->flush_rx();
-        } else if ((rxbytes & 0x7F) > 0) {
+        } else if (!stable || (rxbytes & 0x7F) > 0) {
           this->rx_ready_.store(true, std::memory_order_release);
         }
         this->process_rx();  // rescue feedback before any next TX, including STOP
@@ -422,15 +413,23 @@ bool Elero::reinit_frequency_mhz(float mhz) {
   return this->reinit_frequency(f2, f1, f0);
 }
 
-void Elero::flush_and_rx() {
-  this->rx_fifo_.reset();
-  ESP_LOGVV(TAG, "flush_and_rx");
+bool Elero::enter_idle_() {
   this->radio_->standby();
-  uint8_t marc = this->read_status(CC1101_MARCSTATE) & 0x1F;
-  if (marc != CC1101_MARCSTATE_IDLE) {
-    this->write_cmd(CC1101_SIDLE);
-    delay_microseconds_safe(500);
+  uint8_t marc = 0;
+  if (this->read_status_stable(CC1101_MARCSTATE, marc) && (marc & 0x1f) == CC1101_MARCSTATE_IDLE)
+    return true;
+  this->write_cmd(CC1101_SIDLE);
+  delay_microseconds_safe(500);
+  return this->read_status_stable(CC1101_MARCSTATE, marc) && (marc & 0x1f) == CC1101_MARCSTATE_IDLE;
+}
+
+void Elero::flush_and_rx() {
+  ESP_LOGVV(TAG, "flush_and_rx");
+  if (!this->enter_idle_()) {
+    this->radio_fatal_error_.store(true, std::memory_order_release);
+    return;  // SFRX/SFTX are illegal in an unverified live state
   }
+  this->rx_fifo_.reset();
   this->write_cmd(CC1101_SFRX);
   this->write_cmd(CC1101_SFTX);
   this->write_cmd(CC1101_SRX);
@@ -439,14 +438,12 @@ void Elero::flush_and_rx() {
 }
 
 void Elero::flush_rx() {
-  this->rx_fifo_.reset();
   ESP_LOGVV(TAG, "flush_rx");
-  this->radio_->standby();
-  uint8_t marc = this->read_status(CC1101_MARCSTATE) & 0x1F;
-  if (marc != CC1101_MARCSTATE_IDLE) {
-    this->write_cmd(CC1101_SIDLE);
-    delay_microseconds_safe(500);
+  if (!this->enter_idle_()) {
+    this->radio_fatal_error_.store(true, std::memory_order_release);
+    return;
   }
+  this->rx_fifo_.reset();
   this->write_cmd(CC1101_SFRX);
   this->write_cmd(CC1101_SRX);
   this->radio_mode_.store(static_cast<uint8_t>(RadioMode::RX), std::memory_order_relaxed);
@@ -656,6 +653,20 @@ uint8_t Elero::read_reg(uint8_t addr) {
 }
 
 uint8_t Elero::read_status(uint8_t addr) {
+  if (addr != CC1101_MARCSTATE && addr != CC1101_RXBYTES && addr != CC1101_TXBYTES &&
+      addr != CC1101_PKTSTATUS)
+    return this->read_status_once_(addr);
+  uint8_t value = 0;
+  return this->read_status_stable(addr, value) ? value : 0xff;  // fail closed
+}
+
+bool Elero::read_status_stable(uint8_t addr, uint8_t &value) {
+  return read_stable_status([this, addr]() { return this->read_status_once_(addr); }, value,
+      addr == CC1101_RXBYTES || addr == CC1101_TXBYTES ? 0x80 : 0,
+      addr == CC1101_MARCSTATE ? CC1101_MARCSTATE_TXFIFO_UFLOW : 0xff);
+}
+
+uint8_t Elero::read_status_once_(uint8_t addr) {
   this->enable();
   this->transfer_byte(addr | CC1101_READ_BURST);
   uint8_t data = this->transfer_byte(0x00);

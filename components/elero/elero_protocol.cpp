@@ -73,35 +73,21 @@ void Elero::interpret_msg() {
   }
 
   if (packet.is_status) {
-    const uint32_t now_ms = millis();
-    auto counter_it = this->last_seen_counter_.find(packet.src);
-    if (counter_it != this->last_seen_counter_.end()) {
-      auto counter_ms_it = this->last_seen_counter_ms_.find(packet.src);
-      const bool has_counter_activity = counter_ms_it != this->last_seen_counter_ms_.end();
-      const uint32_t last_counter_activity_ms = has_counter_activity ? counter_ms_it->second : 0u;
-      const auto decision = counter_logic::evaluate_status_counter(
-          counter_it->second, packet.cnt, last_counter_activity_ms, now_ms, has_counter_activity);
-      if (!decision.accept) {
-        this->last_seen_counter_ms_[packet.src] = decision.next_activity_ms;
-        ESP_LOGV(TAG, "Stale status counter from 0x%06lx cnt=%d last=%d, dropping",
-                 static_cast<unsigned long>(packet.src), packet.cnt, counter_it->second);
-        this->increment_parser_drop_count("stale_counter");
-        if (this->packet_dump_pending_update_) {
-          this->mark_last_raw_packet_(false, "stale_counter");
-          this->packet_dump_pending_update_ = false;
-        }
-        return;
+    auto &counter = this->status_counters_[packet.src];
+    const auto decision = counter_logic::evaluate_status_counter(counter, packet.cnt, millis());
+    if (!decision.accept) {
+      ESP_LOGV(TAG, "Stale/candidate status from 0x%06lx cnt=%d accepted=%d, dropping",
+               static_cast<unsigned long>(packet.src), packet.cnt, counter.accepted);
+      this->increment_parser_drop_count("stale_counter");
+      if (this->packet_dump_pending_update_) {
+        this->mark_last_raw_packet_(false, "stale_counter");
+        this->packet_dump_pending_update_ = false;
       }
-      if (counter_logic::is_stale_counter(counter_it->second, packet.cnt)) {
-        ESP_LOGD(TAG, "Resyncing status counter from 0x%06lx cnt=%d last=%d after %lums gap",
-                 static_cast<unsigned long>(packet.src), packet.cnt, counter_it->second,
-                 static_cast<unsigned long>(has_counter_activity
-                                               ? static_cast<uint32_t>(now_ms - last_counter_activity_ms)
-                                               : 0u));
-      }
+      return;
     }
-    this->last_seen_counter_[packet.src] = packet.cnt;
-    this->last_seen_counter_ms_[packet.src] = now_ms;
+    if (decision.resynced)
+      ESP_LOGD(TAG, "Status counter resynced for 0x%06lx to %d after advancing candidates",
+               static_cast<unsigned long>(packet.src), packet.cnt);
   }
 
   if (this->packet_dump_pending_update_) {
@@ -198,9 +184,12 @@ void Elero::dispatch_rx_result_(const RxResult &rx) {
 
   // 3. Status packets (0xca/0xc9): dispatch state to entities
   if (rx.is_status) {
-
+    auto search = this->address_to_cover_mapping_.find(rx.blind_address);
 #ifdef USE_TEXT_SENSOR
-    {
+    // During verification the cover owns the diagnostic result. Do not publish
+    // stale STOPPED/UNKNOWN over stop_verifying before freshness is checked.
+    if (search == this->address_to_cover_mapping_.end() ||
+        !search->second->should_defer_intent({CommandIntentKind::OPEN, 0})) {
       auto text_it = this->address_to_text_sensor_.find(rx.blind_address);
       if (text_it != this->address_to_text_sensor_.end()) {
         text_it->second->publish_state(elero_state_to_string(rx.state));
@@ -208,7 +197,6 @@ void Elero::dispatch_rx_result_(const RxResult &rx) {
     }
 #endif
 
-    auto search = this->address_to_cover_mapping_.find(rx.blind_address);
     if (search != this->address_to_cover_mapping_.end()) {
       search->second->notify_rx_meta(rx.timestamp_ms, rx.rssi);
       search->second->set_rx_status(rx.state, rx.meta);

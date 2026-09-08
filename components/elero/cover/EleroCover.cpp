@@ -75,7 +75,8 @@ void EleroCover::loop() {
     }
   }
 
-  if (cover_logic::should_poll(now, this->last_poll_, intvl) &&
+  if (!this->stop_verification_active_.load() &&
+      cover_logic::should_poll(now, this->last_poll_, intvl) &&
       intent_was_accepted(this->submit_intent({CommandIntentKind::CHECK, 0}))) {
     this->last_poll_ = now;
   }
@@ -91,7 +92,9 @@ void EleroCover::loop() {
 
   // Stop verification: poll motor to confirm it actually stopped. If no
   // status arrives, retry one bounded STOP burst before failing open.
-  if (this->stop_verify_at_ > 0 && now >= this->stop_verify_at_ && !this->pending_stop_transition_ && !this->stop_burst_pending_) {
+  if (this->stop_verification_active_.load() &&
+      static_cast<int32_t>(now - this->stop_verify_at_) >= 0 &&
+      !this->pending_stop_transition_ && !this->stop_burst_pending_) {
     if (this->stop_verify_retries_ < ELERO_STOP_VERIFY_MAX_RETRIES) {
       this->stop_verify_retries_++;
       ESP_LOGD(TAG, "Stop verify poll #%d for blind 0x%06lx",
@@ -168,6 +171,14 @@ void EleroCover::handle_delivery_outcome_(const DeliveryOutcome &outcome) {
       this->fail_stop_verification_(millis());
     return;
   }
+  if (const char *result = ordinary_delivery_result(outcome)) {
+    ESP_LOGI(TAG, "Blind 0x%06lx: %s (no protocol ACK)",
+             static_cast<unsigned long>(this->command_.blind_addr), result);
+#ifdef USE_TEXT_SENSOR
+    if (!this->stop_verification_active_.load())
+      this->parent_->publish_text_sensor_state(this->command_.blind_addr, result);
+#endif
+  }
   const bool packet_accepted = delivery_packet_was_accepted(outcome.event);
   const bool is_movement = outcome.intent.kind == CommandIntentKind::OPEN ||
                            outcome.intent.kind == CommandIntentKind::CLOSE;
@@ -213,11 +224,6 @@ void EleroCover::handle_delivery_outcome_(const DeliveryOutcome &outcome) {
     ESP_LOGE(TAG, "Delivery retries exhausted for blind 0x%06lx",
              static_cast<unsigned long>(this->command_.blind_addr));
     this->parent_->increment_tx_drop_count();
-    if (outcome.intent.kind == CommandIntentKind::STOP && this->pending_stop_transition_) {
-      this->pending_stop_transition_ = false;
-      this->stop_trigger_ms_ = 0;
-      this->finish_stop_verification_();
-    }
     if (this->pending_movement_start_ && outcome.intent.kind == this->pending_movement_kind_) {
       this->pending_movement_start_ = false;
       this->current_operation = COVER_OPERATION_IDLE;
@@ -227,11 +233,6 @@ void EleroCover::handle_delivery_outcome_(const DeliveryOutcome &outcome) {
     ESP_LOGW(TAG, "Stale Command queue cleared for blind 0x%06lx",
              static_cast<unsigned long>(this->command_.blind_addr));
     this->parent_->increment_tx_drop_count();
-    if (outcome.intent.kind == CommandIntentKind::STOP && this->pending_stop_transition_) {
-      this->pending_stop_transition_ = false;
-      this->stop_trigger_ms_ = 0;
-      this->finish_stop_verification_();
-    }
     if (this->pending_movement_start_) {
       this->pending_movement_start_ = false;
       this->current_operation = COVER_OPERATION_IDLE;
@@ -299,6 +300,7 @@ IntentSubmitResult EleroCover::request_stop(bool already_admitted) {
   this->stop_trigger_ms_ = now;
   this->stop_verify_stop_retries_ = 0;
   this->stop_verify_at_ = 0;
+  this->post_movement_poll_at_ = 0;  // STOP owns its bounded CHECK schedule
   this->stop_rx_cutoff_ = {};
   this->stop_verification_active_.store(true);
   this->delivery_.set_stop_verifying(true);
@@ -642,6 +644,7 @@ void EleroCover::finish_stop_verification_() {
   this->stop_verify_retries_ = ELERO_STOP_VERIFY_MAX_RETRIES;
   this->stop_verify_stop_retries_ = 0;
   this->pending_stop_transition_ = false;
+  this->stop_burst_pending_ = false;
   this->stop_verification_active_.store(false);
   this->delivery_.set_stop_verifying(false);
   this->stop_rx_cutoff_ = {};
@@ -691,7 +694,7 @@ void EleroCover::handle_group_delivery_outcome(const DeliveryOutcome &outcome) {
        (outcome.fallback_member || outcome.queue_size == 0));
   if (!terminal_failure)
     return;
-  if (outcome.intent.kind == CommandIntentKind::STOP && this->pending_stop_transition_) {
+  if (outcome.intent.kind == CommandIntentKind::STOP && this->stop_verification_active_.load()) {
     this->pending_stop_transition_ = false;
     this->stop_trigger_ms_ = 0;
     this->stop_burst_pending_ = false;
