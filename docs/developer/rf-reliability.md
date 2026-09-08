@@ -26,6 +26,14 @@ UNKNOWN, TIMEOUT and unknown raw values do not confirm STOP. Fresh movement may 
 
 Only STOP bypasses a lane's three-second failure cooldown; the cooldown is not erased for OPEN/CLOSE/CHECK. A selected STOP burst is never truncated by another lane's STOP. Native group movement is ineligible while any referenced member verifies STOP, including movement admitted before the block was established.
 
+## FIFO, CCA and RX opportunities
+
+With unchanged `PKTCTRL1=0x8c` (CRC_AUTOFLUSH), consuming even a length byte during active reception is unsafe. `RxFifoReader` waits for packet end, verifies IDLE and reads each packet separately from a frozen <=64-byte snapshot. Complete packet + in-flight prefix is left entirely in hardware until the following packet ends; nothing is concatenated in software across a CRC autoflush. A stuck GDO has a 20 ms budget. If a reception starts in the GPIO→SIDLE race, complete predecessors are preserved and the interrupted tail is explicitly counted/discarded. Overflow is not reconstructable. This bounded freeze strategy has a receive blind interval; its duration and overflow behavior under back-to-back long frames require hardware measurement.
+
+Buffered data is processed before new TX and on completion/cooldown, rather than sacrificing it to TX-first scheduling. TX preparation verifies IDLE, clears/loads TX only, issues SRX, listens for at least 1 ms and checks RX/CCA before STX. The hardware therefore actually applies unchanged `MCSM1=0x3f` CCA mode. A busy/rejected channel retains RX ownership and loaded TX bytes during backoff, without SFRX. Backoff is 2–19 ms with deterministic per-attempt jitter, bounded by five busy decisions or 50 ms; it does not add unbounded coordinator retries. STOP priority never bypasses CCA.
+
+`send_delay` is measured from successful local completion, survives intent changes, and applies across profiles through the hub. Normal traffic also leaves a minimum 2 ms RX opportunity when `send_delay=0ms`. STOP bypasses spacing, not receive safety, CCA or bounded failure backoff. A zero timestamp and millis wrap are valid.
+
 ## Validation boundary
 
 The host entity tests compile the complete production cover/group method bodies and production declarations, substituting only framework include paths and ESPHome/queue boundaries. Causal timelines, lane/coordinator logic and state transitions are production code. These tests do not validate RF propagation, CC1101 electrical timing or motor mechanics. Register access and FIFO/CCA behavior require separate radio tests and hardware validation.

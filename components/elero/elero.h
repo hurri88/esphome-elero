@@ -10,6 +10,8 @@
 #include "cc1101.h"
 #include "elero_profile_delivery_coordinator.h"
 #include "elero_tx_admission.h"
+#include "elero_rx_fifo.h"
+#include "elero_radio_timing.h"
 #include <RadioLib.h>
 #include <string>
 #include <vector>
@@ -35,10 +37,10 @@ namespace elero {
 
 /// Non-blocking TX state machine states.
 /// The radio is always in RX when IDLE; TX progresses one step per loop().
-/// RadioLib's standby() handles the IDLE transition synchronously in
-/// send_command_internal_(), so only 3 states remain.
+/// CCA/backoff remains in RX; STX is issued only from verified RX.
 enum class TxState : uint8_t {
   IDLE,           ///< Radio in RX, ready for TX
+  CCA,            ///< FIFO loaded; bounded RX listen/backoff before STX
   TRANSMITTING,   ///< Packet loaded and STX sent, waiting for TX to complete
   COOLDOWN,       ///< Brief pause before resuming RX
 };
@@ -621,7 +623,8 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   bool send_command_internal_(t_elero_command *cmd, uint32_t enqueued_at_ms = 0);  // actual SPI TX, Core 0 only
 
   // Non-blocking TX state machine (runs on Core 0 radio task)
-  void process_rx();
+  struct RxFifoIO;
+  bool process_rx(bool keep_idle = false);
   void advance_tx();
   void dispatch_rx_result_(const RxResult &rx);  // runs on Core 1 main loop
   void advance_delivery_coordinators_();
@@ -656,6 +659,10 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   // that arrives just as we clear flags for TX preparation.
   RxTimeline rx_timeline_;  // Core 0 only; no 64-bit atomics in the GPIO ISR
   RxMetadata current_rx_meta_{};
+  RxFifoReader rx_fifo_;
+  CcaBackoff cca_backoff_;
+  CompletionSpacing radio_spacing_;  // Core 1 only; all profiles share the RX window
+  bool tx_started_seen_{false};
   std::atomic<uint32_t> rx_irq_ms_{0};
   std::atomic<bool> rx_ready_{false};   // set by ISR when GDO0 fires in RX mode
   std::atomic<bool> tx_done_{false};    // set by ISR when GDO0 fires in TX mode

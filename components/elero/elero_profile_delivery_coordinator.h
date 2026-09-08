@@ -8,6 +8,7 @@
 // semantic lanes only.
 
 #include "elero_command_delivery.h"
+#include "elero_radio_timing.h"
 
 #include <algorithm>
 #include <array>
@@ -123,8 +124,9 @@ class ProfileDeliveryCoordinator {
       } else {
         const bool urgent = intent.kind == CommandIntentKind::STOP;
         const uint8_t shift = std::min(this->failure_count_, static_cast<uint8_t>(3));
-        const uint32_t delay = (urgent ? 0u : base_delay_ms) +
-                               (this->failure_count_ == 0 ? 0u : (10u << shift));
+        const uint32_t delay = this->failure_count_ == 0 ? 0u : (10u << shift);
+        if (!urgent && !this->spacing_.ready(now, base_delay_ms))
+          return this->outcome_locked_(DeliveryEvent::WAITING, intent);
         if (this->attempt_started_ && (now - this->last_attempt_ms_) <= delay)
           return this->outcome_locked_(DeliveryEvent::WAITING, intent);
 
@@ -270,6 +272,7 @@ class ProfileDeliveryCoordinator {
       return dispatch;
     }
 
+    this->spacing_.completed(completed_at_ms);
     this->failure_count_ = 0;
     const bool first_transmission = this->accepted_repeats_ == 0;
     this->accepted_repeats_++;
@@ -463,6 +466,7 @@ class ProfileDeliveryCoordinator {
   uint8_t pending_required_repeats_{1};
   bool stop_after_pending_{false};
   RxCutoff completion_cutoff_{};
+  CompletionSpacing spacing_;  // intentionally not reset between semantic intents
 };
 
 // ---------------------------------------------------------------------------
