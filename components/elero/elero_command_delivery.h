@@ -7,6 +7,7 @@
 // exclusively to ProfileDeliveryCoordinator.
 
 #include "elero_command_profile.h"
+#include "elero_rx_metadata.h"
 
 #include <array>
 #include <cstddef>
@@ -175,6 +176,7 @@ struct DeliveryOutcome {
   bool first_transmission{false};
   bool fallback_member{false};
   uint8_t fallback_member_index{0};
+  RxCutoff rx_cutoff{};  // causal radio fence, not a motor acknowledgement
 };
 
 class ProfileDeliveryCoordinator;
@@ -211,6 +213,7 @@ class CommandIntentDelivery {
                                           uint32_t submitted_at_ms);
 
   void release_deferred();
+  void set_stop_verifying(bool active);
   void postpone_until(uint32_t not_before_ms);
   void discard_pending();
   void discard_checks();
@@ -256,6 +259,8 @@ class CommandIntentDelivery {
   ProfileDeliveryCoordinator *coordinator_{nullptr};
   OutcomeCallback outcome_callback_{};
   std::array<CommandDeliveryConfig, ELERO_MAX_DESTS> fallback_configs_{};
+  std::array<CommandIntentDelivery *, ELERO_MAX_DESTS> fallback_members_{};
+  bool stop_verifying_{false};
   uint8_t fallback_member_count_{0};
   uint32_t not_before_ms_{0};
 };

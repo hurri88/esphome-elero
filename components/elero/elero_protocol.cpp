@@ -115,6 +115,21 @@ void Elero::interpret_msg() {
   ESP_LOGV(TAG, "rcv'd: len=%02d, cnt=%02d, typ=0x%02x, typ2=0x%02x, hop=0x%02x, syst=0x%02x, chl=%02d, src=0x%06lx, bwd=0x%06lx, fwd=0x%06lx, #dst=%02d, dst=0x%06lx, rssi=%2.1f, lqi=%2d, crc=%2d, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]", packet.length, packet.cnt, packet.typ, packet.typ2, packet.hop, packet.syst, packet.channel, static_cast<unsigned long>(packet.src), static_cast<unsigned long>(packet.bwd), static_cast<unsigned long>(packet.fwd), packet.num_dests, static_cast<unsigned long>(packet.first_dst), packet.rssi, packet.lqi, packet.crc, packet.payload_1, packet.payload_2, packet.payload[0], packet.payload[1], packet.payload[2], packet.payload[3], packet.payload[4], packet.payload[5], packet.payload[6], packet.payload[7]);
 
   RxResult rx{};
+  rx.meta = this->current_rx_meta_;
+  rx.meta.source = packet.src;
+  rx.meta.backward = packet.bwd;
+  rx.meta.forward = packet.fwd;
+  rx.meta.channel = packet.channel;
+  rx.meta.counter = packet.cnt;
+  rx.meta.type = packet.typ;
+  rx.meta.type2 = packet.typ2;
+  rx.meta.hop = packet.hop;
+  rx.meta.system = packet.syst;
+  rx.meta.destination_count = packet.num_dests;
+  // Status destinations are retained too, without inventing an echoed TX ID.
+  for (uint8_t i = 0; i < packet.num_dests; i++)
+    rx.meta.destinations[i] = packet.typ > 0x60
+        ? packet_parser::read_u24(this->msg_rx_, 17 + i * 3) : this->msg_rx_[17 + i];
   rx.blind_address = packet.src;
   rx.remote_address = packet.is_status ? packet.fwd : packet.src;
   rx.channel = packet.channel;
@@ -123,7 +138,7 @@ void Elero::interpret_msg() {
   rx.hop = packet.hop;
   rx.state = packet.payload[6];
   rx.rssi = packet.rssi;
-  rx.timestamp_ms = millis();
+  rx.timestamp_ms = rx.meta.received_at_ms;
   memcpy(rx.payload, packet.payload, sizeof(rx.payload));
   rx.cnt = packet.cnt;
   rx.is_status = packet.is_status;
@@ -196,7 +211,7 @@ void Elero::dispatch_rx_result_(const RxResult &rx) {
     auto search = this->address_to_cover_mapping_.find(rx.blind_address);
     if (search != this->address_to_cover_mapping_.end()) {
       search->second->notify_rx_meta(rx.timestamp_ms, rx.rssi);
-      search->second->set_rx_state(rx.state);
+      search->second->set_rx_status(rx.state, rx.meta);
     }
 
     auto light_search = this->address_to_light_mapping_.find(rx.blind_address);

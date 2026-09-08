@@ -110,6 +110,7 @@ void Elero::process_rx() {
     if (avail > CC1101_FIFO_LENGTH) {
       ESP_LOGV(TAG, "Received more bytes than FIFO length");
     }
+    this->current_rx_meta_ = this->rx_timeline_.capture(millis());
     this->read_buf(CC1101_RXFIFO, this->msg_rx_, fifo_count);
 
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE

@@ -201,6 +201,7 @@ struct RuntimeBlind {
 
 /// Result of a decoded RX packet, sent from radio task (Core 0) → main loop (Core 1).
 struct RxResult {
+  RxMetadata meta{};
   uint32_t blind_address;         // src address (3 bytes)
   uint32_t remote_address;        // fwd/bwd address
   uint8_t  channel;
@@ -236,6 +237,7 @@ struct TxCompletion {
   uint32_t transaction_id{0};
   uint32_t completed_at_ms{0};
   bool success{false};
+  RxCutoff rx_cutoff{};
 };
 
 /// Control message types for the radio task.
@@ -298,6 +300,8 @@ class EleroLightBase {
 class EleroBlindBase {
  public:
   virtual ~EleroBlindBase() = default;
+  virtual void set_rx_status(uint8_t state, const RxMetadata &meta) { this->set_rx_state(state); }
+  virtual IntentSubmitResult request_stop(bool already_admitted = false) = 0;
   virtual void set_rx_state(uint8_t state) = 0;
   virtual uint32_t get_blind_address() = 0;
   virtual void set_poll_offset(uint32_t offset) = 0;
@@ -650,6 +654,9 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   // Interrupt flags: separate atomics for RX and TX events.
   // ISR routes based on radio_mode_ to avoid losing an RX interrupt
   // that arrives just as we clear flags for TX preparation.
+  RxTimeline rx_timeline_;  // Core 0 only; no 64-bit atomics in the GPIO ISR
+  RxMetadata current_rx_meta_{};
+  std::atomic<uint32_t> rx_irq_ms_{0};
   std::atomic<bool> rx_ready_{false};   // set by ISR when GDO0 fires in RX mode
   std::atomic<bool> tx_done_{false};    // set by ISR when GDO0 fires in TX mode
 
