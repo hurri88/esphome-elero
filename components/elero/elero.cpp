@@ -380,7 +380,7 @@ void Elero::dump_config() {
   ESP_LOGCONFIG(TAG, "  Send repeats: %d, send delay: %lu ms, dedup window: %lu ms",
                 this->send_repeats_, static_cast<unsigned long>(this->send_delay_),
                 static_cast<unsigned long>(this->dedup_window_ms_));
-  ESP_LOGCONFIG(TAG, "  RadioLib: begin() + standby() + setFrequency(); direct SPI for register access");
+  ESP_LOGCONFIG(TAG, "  RadioLib: ConfigFSK begin() + public CC1101 config APIs; direct SPI for Elero FIFO/recovery");
   if (this->spi_failed_.load(std::memory_order_acquire)) {
     ESP_LOGCONFIG(TAG, "  SPI Status: FAILED — CC1101 communication broken");
     ESP_LOGCONFIG(TAG, "  Check SPI pin assignments — avoid ESP32 strapping pins (GPIO0/2/5/12/15)");
