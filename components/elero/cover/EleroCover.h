@@ -70,6 +70,7 @@ class EleroCover : public cover::Cover, public Component, public EleroBlindBase 
   uint8_t get_payload_1() const override { return this->command_.payload[0]; }
   uint8_t get_payload_2() const override { return this->command_.payload[1]; }
   IntentSubmitResult submit_intent(const CommandIntent &intent) override;
+  IntentSubmitResult submit_control_intent(const CommandIntent &intent) override;
   CommandDeliveryConfig get_command_delivery_config() const override;
   CommandIntentDelivery *get_command_delivery() override { return &this->delivery_; }
   bool should_defer_intent(const CommandIntent &intent) const override {
@@ -87,7 +88,7 @@ class EleroCover : public cover::Cover, public Component, public EleroBlindBase 
   void prepare_group_intent(const CommandIntent &intent, float target_position = -1.0f) override;
   void handle_group_delivery_outcome(const DeliveryOutcome &outcome) override;
   void recompute_position();
-  void start_movement(cover::CoverOperation op);
+  IntentSubmitResult start_movement(cover::CoverOperation op);
   bool is_at_target();
 
  protected:

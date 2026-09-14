@@ -677,7 +677,7 @@ void EleroWebServer::handle_cover_command(AsyncWebServerRequest *request, uint32
       this->send_json_error(request, 400, "Unknown cmd");
       return;
     }
-    send_result(cover->second->submit_intent(intent));
+    send_result(cover->second->submit_control_intent(intent));
     return;
   }
 

@@ -327,6 +327,10 @@ class EleroBlindBase {
   virtual uint32_t get_close_duration_ms() const = 0;
   virtual bool get_supports_tilt() const = 0;
   virtual IntentSubmitResult submit_intent(const CommandIntent &intent) = 0;
+  /// Submit a command through the same semantic state transition used by the
+  /// ESPHome cover control path. Web adapters must use this instead of
+  /// bypassing cover movement and STOP state handling via submit_intent().
+  virtual IntentSubmitResult submit_control_intent(const CommandIntent &intent) = 0;
   virtual CommandDeliveryConfig get_command_delivery_config() const = 0;
   virtual CommandIntentDelivery *get_command_delivery() = 0;
   virtual bool should_defer_intent(const CommandIntent &) const { return false; }
