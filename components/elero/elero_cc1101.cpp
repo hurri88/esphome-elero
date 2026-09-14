@@ -560,39 +560,17 @@ bool Elero::init() {
 
   uint8_t patable_data[] = {0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0};
 
-  // Delegate RF parameters with exact public RadioLib APIs where those APIs map
-  // one-to-one to the existing register values. Keep direct writes below for
-  // CC1101 fields that RadioLib does not expose equivalently (for example the
-  // 30/32 sync mode bits in MDMCFG2 and the custom packet-control/autoflush
-  // combination). No RF values are changed here.
-  int16_t rc = this->radio_->setFrequency(registers_to_mhz(this->freq2_, this->freq1_, this->freq0_));
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setFrequency failed rc=%d, falling back to direct FREQ registers", rc);
-    this->write_reg(CC1101_FREQ2, this->freq2_);
-    this->write_reg(CC1101_FREQ1, this->freq1_);
-    this->write_reg(CC1101_FREQ0, this->freq0_);
-  }
-  rc = this->radio_->setRxBandwidth(101.5625);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setRxBandwidth failed rc=%d", rc);
-    return false;
-  }
-  rc = this->radio_->setBitRate(47.607);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setBitRate failed rc=%d", rc);
-    return false;
-  }
-  rc = this->radio_->setFrequencyDeviation(38.383);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setFrequencyDeviation failed rc=%d", rc);
-    return false;
-  }
-
   this->write_reg(CC1101_FSCTRL0, 0x00);
+  this->write_reg(CC1101_FREQ2, this->freq2_);
+  this->write_reg(CC1101_FREQ1, this->freq1_);
+  this->write_reg(CC1101_FREQ0, this->freq0_);
+  this->write_reg(CC1101_MDMCFG4, 0x7B);
+  this->write_reg(CC1101_MDMCFG3, 0x83);
   this->write_reg(CC1101_MDMCFG2, 0x13);
   this->write_reg(CC1101_MDMCFG1, 0x52);
   this->write_reg(CC1101_MDMCFG0, 0xF8);
   this->write_reg(CC1101_CHANNR, 0x00);
+  this->write_reg(CC1101_DEVIATN, 0x43);
   this->write_reg(CC1101_FREND1, 0xB6);
   this->write_reg(CC1101_FREND0, 0x10);
   this->write_reg(CC1101_MCSM0, 0x18);
@@ -614,21 +592,7 @@ bool Elero::init() {
   this->write_reg(CC1101_PKTCTRL1, 0x8C);
   this->write_reg(CC1101_PKTCTRL0, 0x45);
   this->write_reg(CC1101_ADDR, 0x00);
-  rc = this->radio_->variablePacketLengthMode(0x3C);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib variablePacketLengthMode failed rc=%d", rc);
-    return false;
-  }
-  rc = this->radio_->setCrcFiltering(true);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setCrcFiltering failed rc=%d", rc);
-    return false;
-  }
-  rc = this->radio_->setEncoding(RADIOLIB_ENCODING_WHITENING);
-  if (rc != RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "init: RadioLib setEncoding failed rc=%d", rc);
-    return false;
-  }
+  this->write_reg(CC1101_PKTLEN, 0x3C);
   this->write_reg(CC1101_SYNC1, 0xD3);
   this->write_reg(CC1101_SYNC0, 0x91);
   this->write_burst(CC1101_PATABLE, patable_data, 8);
