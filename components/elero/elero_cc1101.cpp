@@ -560,11 +560,23 @@ bool Elero::init() {
 
   uint8_t patable_data[] = {0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0};
 
-  // Delegate RF parameters with exact public RadioLib APIs where those APIs map
-  // one-to-one to the existing register values. Keep direct writes below for
-  // CC1101 fields that RadioLib does not expose equivalently (for example the
-  // 30/32 sync mode bits in MDMCFG2 and the custom packet-control/autoflush
-  // combination). No RF values are changed here.
+  // RadioLib delegation matrix for the Elero CC1101 profile:
+  // - Delegated: carrier frequency, RX bandwidth, bit rate, frequency deviation,
+  //   variable packet length, CRC enable, and data whitening. These RadioLib APIs
+  //   map directly to the existing register semantics and keep the same values.
+  // - Kept direct: FSCTRL0, channel spacing, 30/32 sync mode, preamble quality,
+  //   front-end, autocal/CCA/RXOFF/TXOFF, AGC, calibration/test registers, GDO0,
+  //   packet-control autoflush/status-byte policy, address disable, sync bytes,
+  //   and PATABLE replication. RadioLib 7.7.1 either has no public API for these
+  //   exact settings or exposes a helper with different side effects/defaults.
+  // - Later spike: TX packet delegation via startTransmit()/finishTransmit(). It
+  //   must preserve Elero's RX-before-TX rescue, STOP priority, hardware-CCA
+  //   behavior, bounded retries, and TX-to-status-response timeline.
+  // - Deliberate NO-GO here: RX delegation via readData()/finishReceive(). The
+  //   Elero RxFifoReader drains multiple frozen FIFO frames and protects
+  //   interrupted tails/RX races; RadioLib's packet API reads one packet and may
+  //   flush state that Elero still needs to classify.
+  // No RF values are changed here.
   int16_t rc = this->radio_->setFrequency(registers_to_mhz(this->freq2_, this->freq1_, this->freq0_));
   if (rc != RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "init: RadioLib setFrequency failed rc=%d, falling back to direct FREQ registers", rc);
@@ -588,32 +600,36 @@ bool Elero::init() {
     return false;
   }
 
-  this->write_reg(CC1101_FSCTRL0, 0x00);
-  this->write_reg(CC1101_MDMCFG2, 0x13);
-  this->write_reg(CC1101_MDMCFG1, 0x52);
-  this->write_reg(CC1101_MDMCFG0, 0xF8);
-  this->write_reg(CC1101_CHANNR, 0x00);
-  this->write_reg(CC1101_FREND1, 0xB6);
-  this->write_reg(CC1101_FREND0, 0x10);
-  this->write_reg(CC1101_MCSM0, 0x18);
-  this->write_reg(CC1101_MCSM1, 0x3F);
-  this->write_reg(CC1101_FOCCFG, 0x1D);
-  this->write_reg(CC1101_BSCFG, 0x1F);
-  this->write_reg(CC1101_AGCCTRL2, 0xC7);
-  this->write_reg(CC1101_AGCCTRL1, 0x00);
-  this->write_reg(CC1101_AGCCTRL0, 0xB2);
-  this->write_reg(CC1101_FSCAL3, 0xEA);
-  this->write_reg(CC1101_FSCAL2, 0x2A);
-  this->write_reg(CC1101_FSCAL1, 0x00);
-  this->write_reg(CC1101_FSCAL0, 0x1F);
-  this->write_reg(CC1101_FSTEST, 0x59);
-  this->write_reg(CC1101_TEST2, 0x81);
-  this->write_reg(CC1101_TEST1, 0x35);
-  this->write_reg(CC1101_TEST0, 0x09);
-  this->write_reg(CC1101_IOCFG0, 0x06);
-  this->write_reg(CC1101_PKTCTRL1, 0x8C);
-  this->write_reg(CC1101_PKTCTRL0, 0x45);
-  this->write_reg(CC1101_ADDR, 0x00);
+  // Exact legacy register profile that is intentionally still direct. Several
+  // RadioLib helpers would rewrite adjacent fields (for example sync mode or
+  // packet-control flags), so do not collapse these writes without a dedicated
+  // equivalence test on hardware.
+  this->write_reg(CC1101_FSCTRL0, 0x00);   // zero frequency offset; no exact public RadioLib API
+  this->write_reg(CC1101_MDMCFG2, 0x13);   // GFSK + 30/32 sync; setSyncWord() only supports 16/16 or 15/16
+  this->write_reg(CC1101_MDMCFG1, 0x52);   // FEC off, 4-byte preamble, CHANSPC_E=2, PQT=2
+  this->write_reg(CC1101_MDMCFG0, 0xF8);   // channel spacing mantissa; no public profile-level API
+  this->write_reg(CC1101_CHANNR, 0x00);    // channel 0; no channel-hopping abstraction used
+  this->write_reg(CC1101_FREND1, 0xB6);    // RX front-end profile
+  this->write_reg(CC1101_FREND0, 0x10);    // TX front-end profile; PATABLE is written below
+  this->write_reg(CC1101_MCSM0, 0x18);     // autocal/pin-control semantics expected by Elero CCA
+  this->write_reg(CC1101_MCSM1, 0x3F);     // CCA + RX/TX transition policy used by the TX state machine
+  this->write_reg(CC1101_FOCCFG, 0x1D);    // frequency-offset compensation profile
+  this->write_reg(CC1101_BSCFG, 0x1F);     // bit-sync profile; RadioLib exposes only bit-rate tolerance bits
+  this->write_reg(CC1101_AGCCTRL2, 0xC7);  // AGC profile
+  this->write_reg(CC1101_AGCCTRL1, 0x00);  // AGC profile
+  this->write_reg(CC1101_AGCCTRL0, 0xB2);  // AGC profile
+  this->write_reg(CC1101_FSCAL3, 0xEA);    // calibration profile from the known-working Elero setup
+  this->write_reg(CC1101_FSCAL2, 0x2A);    // calibration profile from the known-working Elero setup
+  this->write_reg(CC1101_FSCAL1, 0x00);    // calibration profile from the known-working Elero setup
+  this->write_reg(CC1101_FSCAL0, 0x1F);    // calibration profile from the known-working Elero setup
+  this->write_reg(CC1101_FSTEST, 0x59);    // test/calibration profile; no public RadioLib API
+  this->write_reg(CC1101_TEST2, 0x81);     // test/calibration profile; no public RadioLib API
+  this->write_reg(CC1101_TEST1, 0x35);     // test/calibration profile; no public RadioLib API
+  this->write_reg(CC1101_TEST0, 0x09);     // test/calibration profile; no public RadioLib API
+  this->write_reg(CC1101_IOCFG0, 0x06);    // GDO0 sync/end-of-packet ISR source used by Elero
+  this->write_reg(CC1101_PKTCTRL1, 0x8C);  // CRC autoflush/status bytes/address policy
+  this->write_reg(CC1101_PKTCTRL0, 0x45);  // whitening + CRC + variable length; refined via RadioLib below
+  this->write_reg(CC1101_ADDR, 0x00);      // address filtering disabled but address kept deterministic
   rc = this->radio_->variablePacketLengthMode(0x3C);
   if (rc != RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "init: RadioLib variablePacketLengthMode failed rc=%d", rc);
@@ -629,8 +645,12 @@ bool Elero::init() {
     ESP_LOGW(TAG, "init: RadioLib setEncoding failed rc=%d", rc);
     return false;
   }
+  // Do not use setSyncWord() here: RadioLib's CC1101 helper also selects a
+  // 16-bit sync tolerance mode, while Elero uses the legacy 30/32 sync mode.
   this->write_reg(CC1101_SYNC1, 0xD3);
   this->write_reg(CC1101_SYNC0, 0x91);
+  // Keep the replicated PATABLE bytes. RadioLib setOutputPower(10) writes only
+  // PATABLE[0], while this profile historically mirrors 0xC0 into all entries.
   this->write_burst(CC1101_PATABLE, patable_data, 8);
 
   this->write_cmd(CC1101_SRX);
