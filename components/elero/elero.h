@@ -735,8 +735,11 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   std::map<DeliveryProfileKey, std::unique_ptr<ProfileDeliveryCoordinator>> delivery_coordinators_;
   size_t next_delivery_profile_index_{0};
   mutable std::mutex delivery_coordinators_mutex_;
-  std::set<uint32_t> own_remote_addresses_;  // remote addrs we TX as — echoes are filtered
 
+  std::map<DeliveryProfileKey, ESPPreferenceObject> counter_prefs_;
+  uint32_t last_counter_save_ms_{0};
+
+  std::set<uint32_t> own_remote_addresses_;  // remote addrs we TX as — echoes are filtered
   // Packet deduplication: O(1) hash lookup keyed by (src << 8 | cnt) → timestamp
   std::unordered_map<uint64_t, uint32_t> dedup_map_;
   uint32_t last_dedup_prune_ms_{0};
