@@ -410,6 +410,20 @@ class ProfileDeliveryCoordinator {
     this->reset_attempt_state_();
   }
 
+ public:
+  /// Zaehlerstand setzen (beim Start aus dem Flash) bzw. auslesen (zum Sichern).
+  /// Die Null wird ausgelassen, genau wie in advance_counter_().
+  void set_counter(uint8_t value) {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->counter_ = (value == 0) ? 1 : value;
+  }
+  uint8_t get_counter() const {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    return this->counter_;
+  }
+
+ private:
+
   void advance_counter_() { this->counter_ = this->counter_ == 0xFF ? 1 : this->counter_ + 1; }
 
   t_elero_command build_packet_(const CommandDeliveryConfig &config,
