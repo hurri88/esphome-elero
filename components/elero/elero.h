@@ -636,6 +636,10 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   bool process_rx(bool keep_idle = false);
   void advance_tx();
   void dispatch_rx_result_(const RxResult &rx);  // runs on Core 1 main loop
+
+  void restore_profile_counter_(const DeliveryProfileKey &key, ProfileDeliveryCoordinator *coordinator);
+  void save_profile_counters_();
+
   void advance_delivery_coordinators_();
   PacketSubmission submit_delivery_packet_(t_elero_command *cmd, bool priority);
   SendResult enqueue_tx_(t_elero_command *cmd, bool priority, uint32_t transaction_id);
