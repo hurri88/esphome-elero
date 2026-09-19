@@ -199,6 +199,7 @@ void Elero::loop() {
   //    runtime devices, and compatible native groups. When the radio is down,
   //    enqueue attempts fail synchronously and exhaust the bounded retry path.
   this->advance_delivery_coordinators_();
+  this->save_profile_counters_();
   if (radio_unavailable)
     return;
   this->poll_runtime_blinds_();
@@ -507,8 +508,10 @@ bool Elero::register_command_delivery(CommandIntentDelivery *delivery) {
   const DeliveryProfileKey key = DeliveryProfileKey::from(delivery->config().profile);
   std::lock_guard<std::mutex> lock(this->delivery_coordinators_mutex_);
   auto &coordinator = this->delivery_coordinators_[key];
-  if (!coordinator)
+  if (!coordinator) {
     coordinator = std::make_unique<ProfileDeliveryCoordinator>(key);
+    this->restore_profile_counter_(key, coordinator.get());
+  }
   return coordinator->attach(delivery);
 }
 
@@ -524,6 +527,59 @@ void Elero::unregister_command_delivery(CommandIntentDelivery *delivery) {
     break;
   }
 }
+
+// Sicherungsintervall und Aufschlag beim Wiederherstellen. Der Aufschlag muss
+// groesser sein als die Zahl der Schritte, die in einem Intervall anfallen
+// koennen - sonst startet das Geraet hinter seinem letzten Stand.
+static const uint32_t ELERO_COUNTER_SAVE_INTERVAL_MS = 30000;
+static const uint8_t  ELERO_COUNTER_RESTORE_MARGIN = 32;
+
+void Elero::restore_profile_counter_(const DeliveryProfileKey &key, ProfileDeliveryCoordinator *coordinator) {
+  if (coordinator == nullptr)
+    return;
+  if (this->counter_prefs_.find(key) != this->counter_prefs_.end())
+    return;  // schon eingerichtet
+
+  const uint32_t hash = fnv1_hash("elero_txcnt_" + std::to_string(key.remote_address) + "_" +
+                                  std::to_string(static_cast<unsigned>(key.channel)));
+  auto pref = global_preferences->make_preference<uint8_t>(hash);
+
+  uint8_t stored = 0;
+  if (pref.load(&stored)) {
+    uint8_t start = static_cast<uint8_t>(stored + ELERO_COUNTER_RESTORE_MARGIN);
+    if (start == 0)
+      start = 1;
+    coordinator->set_counter(start);
+    ESP_LOGI(TAG, "TX counter for remote 0x%06lx ch=%u restored to %u (stored %u + margin %u)",
+             static_cast<unsigned long>(key.remote_address), static_cast<unsigned>(key.channel),
+             static_cast<unsigned>(start), static_cast<unsigned>(stored),
+             static_cast<unsigned>(ELERO_COUNTER_RESTORE_MARGIN));
+  } else {
+    ESP_LOGI(TAG, "No stored TX counter for remote 0x%06lx ch=%u, starting at 1",
+             static_cast<unsigned long>(key.remote_address), static_cast<unsigned>(key.channel));
+  }
+  this->counter_prefs_[key] = pref;
+}
+
+void Elero::save_profile_counters_() {
+  const uint32_t now = millis();
+  if (now - this->last_counter_save_ms_ < ELERO_COUNTER_SAVE_INTERVAL_MS)
+    return;
+  this->last_counter_save_ms_ = now;
+
+  std::lock_guard<std::mutex> lock(this->delivery_coordinators_mutex_);
+  for (auto &entry : this->delivery_coordinators_) {
+    if (!entry.second)
+      continue;
+    auto it = this->counter_prefs_.find(entry.first);
+    if (it == this->counter_prefs_.end())
+      continue;
+    uint8_t value = entry.second->get_counter();
+    it->second.save(&value);
+  }
+}
+
+
 
 void Elero::advance_delivery_coordinators_() {
   if (this->tx_admission_.busy())
